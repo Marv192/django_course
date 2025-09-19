@@ -318,9 +318,9 @@ Women.objects.filter(pk__gte=5).delete()    можно объединить
 В views.py чтобы получить запись из БД, используется функция get_object_or_404(table_name, filter)
 Пример get_object_or_404(Women, pk=4)
 
-т.к. pl уникален, то и слаг получится уникальным.
+т.к. pk уникален, то и слаг получится уникальным.
 for w in Women.objects.all():
-   ...:     w.slug = 'slug-'+str(w.pk)
+   ...:     w.slug = 'slug-'+str(w.pk)   ('slug-#')
    ...:     w.save()
 
 Для отображения адреса со слагом, в urls.py меняем путь представления на 'post/<slug:post_slug>/'
@@ -330,3 +330,1094 @@ for w in Women.objects.all():
         return reverse('post', kwargs={'post_slug': self.slug })
 Т.к. self это объект, он может выдать слаг через self.slug, функцию reverse возвращает полный url адрес
 В шаблоне index.html нужно поменять формирование ссылки на <a href="{{ p.get_absolute_url }}">
+========================================================================================
+
+ 3.7 Создание пользовательского менеджера модели
+В models.py создаем новый класс менеджера PublishedManager, где прописываем функцию get_queryset,
+которая вернет список, в этой функции вызываем функцию класса Manager get_queryset(), она вернет все записи,
+их уже фильтруем. Пример:
+class PublishedManager(models.Manager):
+    def get_queryset(self):
+        super().get_queryset().filter(is_published=1)
+
+В классе women создаем объект этого менеджера: published = PublishedManager(), теперь его можно использовать
+в функциях представлений (views.py)
+Когда мы определяем в классе новый менеджер, то менеджер objects перестает существовать и больше нельзя
+обращаться как Women.objects, будет выдавать ошибку. Чтобы он продолжал существовать, нужно его
+дополнительно объявить в классе Women. (objects = models.Manager())
+
+После создания менеджера можно в функции представления index прописать posts = Women.published.all(), он
+вернет только опубликованные статьи.
+
+Чтобы в БД хранить данные, где возможны только несколько вариантов (статус чего-либо(создан, в работе,
+в доставке и т.д.)) можно в классе Women создать вложенный класс (Status), который наследуется от
+models.IntegerChoices. Внутри этого класса можно описать несколько статусов. В БД они будут храниться
+под числами, но обращаться к ним можно по названию. Пример:
+    class Status(models.IntegerChoices):
+        DRAFT = 0, 'Черновик'
+        PUBLISHED = 1, 'Опубликовано'
+Пример обращения: (is_published=Women.Status.PUBLISHED)
+Можно так же использовать для изменения данных (w.update(is_published=Women.Status.PUBLISHED))
+Можно посмотреть данные класса в консоли Women.Status.choices.
+========================================================================================
+
+  4. Связи между таблицами
+ 4.1 Типы связей между моделями
+Разнесение данных по нескольким таблицам называется нормализацией данных.
+Foreign key - Many to One
+ManyToManyField - Many to Many
+OneToOneField - One to One
+========================================================================================
+
+ 4.2 Создание связи many-to-one (многие к одному)
+Для создания связи многие к одному, нужно использовать класс ForeignKey.
+
+to - ссылка или строка класса модели, с которой происходит связывание (в нашем случае это класс Category -
+модели для категорий).
+on_delete - тип ограничения при удалении внешней записи (в нашем примере - это удаление из таблицы Category).
+Значения параметра on_delete:
+ models.CASCADE - при удалении из первичной модели (у нас это таблица Category) происходит удаление всех
+записей из вторичной модели (Women), связанных с удаляемой категорией.
+ models.PROTECT - запрещает удаление записи из первичной модели, если она используется во вторичной (выдает
+исключение).
+ models.SET_NULL - при удалении записи первичной модели устанавливает значение foreign key в NULL у
+соответствующих записей вторичной модели.
+ models.SET_DEFAULT - то же самое, что и SET_NULL, только вместо значения NULL устанавливает значение по
+умолчанию, которое должно быть определено через класс ForeignKey.
+ models.DO_NOTHING - удаление записи в первичной модели не вызывает никаких действий у вторичных моделей.
+
+Создали новую модель(таблицу) Category:
+class Category(models.Model):
+    name = models.CharField(max_length=100, db_index=True)
+    slug = models.SlugField(max_length=255, unique=True, db_index=True)
+
+    def __str__(self):
+        return self.name
+
+Чтобы связать 2 таблицы, в Women надо создать атрибут
+cat = models.ForeignKey('Category', on_delete=models.PROTECT)
+Имя модели пишется как строка, т.к. на момент определения этого атрибута таблица Category еще не создана (
+она написана ниже в коде). С  таким атрибутом получается одной записи в категориях может соответствовать
+много записей в Women.
+
+Заполняем таблицу Category.
+Category.objects.create(name='Актрисы', slug='aktrisy')
+
+Заполняем данные cat_id
+w_list = Women.objects.all()
+w_list.update(cat_id=1)
+========================================================================================
+
+ 4.3 ORM-команды для связи many-to-one
+Возьмем объект модели Women (w = Women.objects.get(pk=1))
+w.cat_id - вернет идентификатор записи в таблице Category (1)
+w.cat - вернет объект класса Category, к которому можно обращаться так же как к объекту w, узнавать его
+данные (w.cat.name)
+
+c = Category.objects.get(pk=1) - берем категорию
+В данном случае автоматически создается атрибут <вторичная_модель>_set (women_set). Данный атрибут является
+менеджером. Мы можем получить все посты, связанные с этой категорией (c.women_set.all())
+
+Чтобы можно было обращаться через другое имя, надо прописать это имя в ForeignKey (related_name='posts')
+Теперь можно обращаться следующим образом: c.posts.all(), c.posts.filter(is_published=1)
+
+Women.objects.filter(cat_id__in=[1, 2]), (cat__in=[1, 2]) вернет то же самое
+
+Можно сначала сделать список:
+cats = Category.objects.all()
+Women.objects.filter(cat__in=cats)
+
+После "__" так же можно указывать поля таблицы. Пример:
+Women.objects.filter(cat__slug='aktrisy'), (cat__name="Певицы"),
+Так же к полям можно применять lookups:
+(cat__name__contains('ы'))
+
+В обратную сторону можно прописать следующим образом:
+Category.objects.filter(posts__title__contains='ли')
+вернет <QuerySet [<Category: Актрисы>, <Category: Актрисы>]> т.к. у 2 актрис в имени содержится "ли".
+
+Если надо вернуть только уникальные значения - добавляется distinct()
+Category.objects.filter(posts__title__contains='ли').distinct()
+вернет <QuerySet [<Category: Актрисы>]>
+========================================================================================
+
+ 4.4 Отображение постов по рубрикам
+Для начала я в файле women/urls.py поменяю в маршруте category конвертор с int на slug и обозначу параметр
+как cat_slug:
+
+path('category/<slug:cat_slug>/', views.show_category, name='category'),
+
+После этого перейдем в файл women/views.py и отредактируем функцию представления show_category() следующим
+образом:
+
+def show_category(request, cat_slug):
+    category = get_object_or_404(Category, slug=cat_slug)
+    posts = Women.published.filter(cat_id=category.pk)
+    data = {
+        'title': f'Рубрика: {category.name}',
+        'menu': menu,
+        'posts': posts,
+        'cat_selected': category.pk,
+    }
+
+    return render(request, 'women/index.html', context=data)
+
+Мы здесь вначале проверяем наличие раздела с указанным слагом, если его нет в БД, то генерируется
+исключение 404 PageNotFound. Если же рубрика найдена, то выбираются все посты с помощью менеджера
+published, у которых категория имеет указанный слаг. Затем формируется словарь data с передаваемыми
+данными в шаблон index.html. Причем, в title мы будем отображать название рубрики. (Список cats_db удалим).
+
+Далее, вспоминаем, что рубрики отображаются с помощью пользовательского шаблонного тега, прописанного в
+файле women_tags.py. Здесь в функции show_categories() вместо коллекции cats_db будем читать данные из
+таблицы category и передавать в шаблон list_categories.html:
+
+@register.inclusion_tag('women/list_categories.html')
+def show_categories(cat_selected_id=0):
+    cats = Category.objects.all()
+    return {"cats": cats, "cat_selected": cat_selected_id}
+
+А в самом шаблоне list_categories.html изменим отображение ссылок рубрик следующим образом:
+
+{% for cat in cats %}
+         {% if cat.id == cat_selected %}
+                   <li class="selected">{{cat.name}}</li>
+         {% else %}
+                   <li><a href="{{ cat.get_absolute_url }}">{{cat.name}}</a></li>
+         {% endif %}
+{% endfor %}
+
+Соответственно, метод get_absolute_url() необходимо добавить в модель Category:
+
+class Category(models.Model):
+    name = models.CharField(max_length=100, db_index=True)
+    slug = models.SlugField(max_length=255, unique=True, db_index=True)
+
+    def get_absolute_url(self):
+        return reverse('category', kwargs={'cat_slug': self.slug})
+
+    def __str__(self):
+        return self.name
+
+Все, мы сделали отображение статей по категориям, причем URL-адреса будут использовать слаги. После
+запуска тестового веб-сервера увидим две категории и отображение списка статей строго по каждой из них.
+
+Добавим еще у каждой статьи вывод названия категории и время ее последнего изменения. В шаблоне index.html
+перед заголовком пропишем строчки:
+
+<li><div class="article-panel">
+         <p class="first">Категория: {{p.cat}}</p>
+         <p class="last">Дата: {{p.time_update|date:"d-m-Y H:i:s"}}</p>
+</div>
+
+Смотрите, обращаясь к атрибуту cat (а не cat_id), мы получаем его строковое представление то, которое
+определили в модели Category через магический метод __str__. То есть, cat – это объект класса Category
+и как вариант мы можем отображать название категории и через его атрибут name:
+
+<p class="first">Категория: {{p.cat.name}}</p>
+
+Для формирования нужного формата времени используем фильтр date с параметрами: день, месяц, год, часы,
+минуты, секунды. Теперь перед каждой статьей отображается ее категория и время последнего редактирования.
+========================================================================================
+
+ 4.5 Добавляем связь many-to-many (многие ко многим)
+Для тегов в джанго создан модуль django-taggit. В уроке будем делать теги сами.
+В models.py создаем модель для тегов:
+class TagPost(models.Model):
+    tag = models.CharField(max_length=100, db_index=True)
+    slug = models.SlugField(max_length=255, unique=True, db_index=True)
+
+    def __str__(self):
+        return self.tag
+
+В класс Women добавляем атрибут tags = models.ManyToManyField('TagPost', blank=True, related_name='tags')
+Добавляем теги в таблицу (в shell_plus):
+TagPost.objects.create(tag='Блондинки', slug='blonde')
+TagPost.objects.create(tag='Брюнетки', slug='brunetky')
+TagPost.objects.create(tag='Оскар', slug='oskar')
+TagPost.objects.create(tag='Олимпиада', slug='olimpiada')
+TagPost.objects.create(tag='Высокие', slug='visokie')
+TagPost.objects.create(tag='Средние', slug='srednie')
+TagPost.objects.create(tag='Низкие', slug='niskie')
+
+Добавляем теги к записям Women:
+a = Women.objects.get(pk=1) - Возьмем объект в Women (<Women: Анджелина Джоли>)
+tag_br = TagPost.objects.all()[1] - Возьмем объект в TagPost (<TagPost: Брюнетки>)
+tag_o, tag_v = TagPost.objects.filter(id__in=[3, 5]) - Так же возьмем еще 2 тега (Оскар, Высокие)
+a.tags.set([tag_br, tag_o, tag_v]) - Присваиваем теги для записи в Women
+a.tags.remove(tag_o) - Для удаления тегов
+a.tags.add(tag_br) - Для добавления тега у  записи (дублирование исключается)
+
+add добавляет теги (можно перечислить несколько), set([list]) полностью перезапишет набор связанных тегов.
+По умолчанию (clear=False) отсутствующие в наборе теги удаляются с помощью метода remove(), а добавляются
+только те, которых не было. Если указать clear=True, то сначала полностью очищается старый набор, а потом
+сразу полностью добавляется новый.
+
+a.tags.all() - Посмотреть все теги:
+tag_br.tags.all() - Посмотреть все статьи с тегом
+
+Так же можно добавлять теги следующим образом:
+b = Women.objects.get(pk=2)
+tag_br.tags.add(b)
+
+Если попробуем добавить теги при создании новой записи:
+Women.objects.create(title='Ариана Гранде', slug='ariana-grande', cat_id=2, tags=[tag_br, tag_v])
+Мы получим ошибку, т.к. у записи еще нет id, и не получится сформировать связь в промежуточной таблице
+Нужно сначала создать запись:
+w = Women.objects.create(title='Ариана Гранде', slug='ariana-grande', cat_id=2)
+А потом присвоить теги:
+w.tags.set([tag_br, tag_v])
+========================================================================================
+
+ 4.6 Добавление тегов на сайт
+В urls.py добавляем новый путь
+path('tag/<slug:tag_slug>', views.show_tag_postlist, name='tag'),
+
+В models.py добавляем новую модель:
+class TagPost(models.Model):
+    tag = models.CharField(max_length=100, db_index=True)
+    slug = models.SlugField(max_length=255, unique=True, db_index=True)
+
+    def __str__(self):
+        return self.tag
+
+    def get_absolute_url(self):
+        return reverse('tag', kwargs={'tag_slug': self.slug})
+
+В views.py добавляем новое представление:
+def show_tag_postlist(request, tag_slug):
+    tag = get_object_or_404(TagPost, slug=tag_slug)
+    posts = tag.tags.filter(is_published=Women.Status.PUBLISHED)
+    ('tags' это related_name у tag в классе Women (ManyToManyField))
+
+    data = {
+        'title': f"Тег: {tag.tag}",
+        'menu': menu,
+        'posts': posts,
+        'cat_selected': None,
+    }
+
+    return render(request, 'women/index.html', context=data)
+
+В women_tags.py создаем новый тег:
+@register.inclusion_tag('women/list_tags.html')
+def show_all_tags():
+    return {'tags': TagPost.objects.all()}
+
+Создаем шаблон list_tags.html:
+{% if tags %}
+    <p>Теги:</p>
+    <ul class="tags-list">
+        {% for t in tags %}
+        <li><a href="{{t.get_absolute_url}}">{{t.tag}}</a></li>
+        {% endfor %}
+    </ul>
+{% endif %}
+
+В base.html добавляем отображение списка тегов:
+<li>{% show_all_tags %}</li>
+
+Чтобы отобразить теги в самой статье, в шаблон post.html добавляем
+{% block breadcrumbs %}
+<!-- Теги -->
+{% with post.tags.all as tags %}
+{% if tags %}
+<ul class="tags-list">
+    <li>Теги:</li>
+    {% for t in tags %}
+    <li><a href="{{t.get_absolute_url}}">{{t.tag}}</a></li>
+    {% endfor %}
+</ul>
+{% endif %}
+{% endwith %}
+{% endblock %}
+
+В блок 'breadcrumbs', который находится в base.html подставится содержимое списка тегов, если он не пустой
+========================================================================================
+
+ 4.7 Связь one-to-one (один к одному)
+Создадим новую модель в models.py:
+class Husband(models.Model):
+    name = models.CharField(max_length=100)
+    age = models.IntegerField(null=True)
+
+    def __str__(self):
+        return self.name
+
+Заполним таблицу:
+h1 = Husband.objects.create(name="Брэд Питт", age=59)
+h2 = Husband.objects.create(name="Том Акерли", age=31)
+h3 = Husband.objects.create(name="Дэниэл Модер")
+h4 = Husband.objects.create(name="Кук Марони")
+
+w1 = Women.objects.get(pk=1) - берем объект из таблицы Women
+w1.husband = h1 - заполняем поле husband_id
+w1.save() - вносим изменения в БД
+
+Можно создавать связь и с другой стороны:
+w2 = Women.objects.get(pk=2)
+h2.wuman = w2
+w2.save()  (!w2, не h2, потому что изменения были внесены в таблицу Women, а не Husband)
+
+Если попробовать записать в husband_id запись, которая уже записана в другом объекте, будет ошибка
+IntegrityError: UNIQUE constraint failed: women_women.husband_id
+Чтобы переназначить связь, нужно сначала удалить старую:
+w2.husband = None
+w2.save()
+w3.husband = h2
+w3.save()
+
+w1.husband - это объект класса husband, соответственно мы можем обращаться к его атрибутам:
+w1.husband.name, w1.husband.age.
+Можно изменять записи:
+w1.husband.age = 30
+w1.husband.save()
+========================================================================================
+========================================================================================
+    5. Погружение в ORM Django
+ 5.1 ORM-команды с классом Q
+Women.objects.filter(pk__in=[2, 5, 7, 10], is_published=True)
+В SQL запросе условия перечисляются через логическое "И".
+
+Класс Q используется для перечисления условий через логическое "ИЛИ"
+from django.db.models import Q
+Women.objects.filter(pk__lt=5, cat_id=2) - (WHERE ("women_women"."cat_id" = 2 AND "women_women"."id" < 5))
+Women.objects.filter(Q(pk__lt=5) | Q(cat_id=2)) - ("women_women"."id" < 5 OR "women_women"."cat_id" = 2)
+
+Для логического "И" с классами Q используется "&":
+Women.objects.filter(Q(pk__lt=5) & Q(cat_id=2)) - ("women_women"."id" < 5 AND "women_women"."cat_id" = 2)
+
+Для логического "НЕ" используется "~":
+Women.objects.filter(~Q(pk__lt=5) & Q(cat_id=2)) -
+WHERE (NOT ("women_women"."id" < 5) AND "women_women"."cat_id" = 2)
+
+Можно объединять с обычными параметрами:
+Women.objects.filter(Q(pk__in=[1, 2, 5]) | Q(cat_id=2), title__icontains='ра') -
+WHERE (("women_women"."id" IN (1, 2, 5) OR "women_women"."cat_id" = 2)
+AND "women_women"."title" LIKE '%ра%' ESCAPE '\')
+
+Если поменять местами обычный параметр и классы Q,
+(Women.objects.filter(title__icontains='ра', (Q(pk__in=[1, 2, 5]) | Q(cat_id=2))))
+будет ошибка, тк перед классами Q нельзя прописывать обычные параметры
+========================================================================================
+
+ 5.2 Методы выбора записей. Методы exists() и count()
+Методы:
+first - первая запись   (Women.objects.first())
+last - последняя запись
+earliest - самая ранняя дата    (Women.objects.all().earliest('time_update'))
+latest - самая поздняя дата     (можно совмещать с filter(<condition>).latest('<field>'))
+get_previous_by - получить предыдущую запись относительно выбранной
+<object>.get_previous_by_<field_name>(<filter_condition>)
+w = Women.objects.get(pk=2)
+w.get_previous_by_time_update(pk__lt=3)
+get_next_by - следующая запись
+
+exists() - проверка существования хотя бы одной записи
+count() - подсчет записей
+
+c3 = Category.objects.get(pk=3)
+In [14]: c3.posts.exists()
+Out[14]: False
+Нет ни одной записи с 3 категорией
+
+c2 = Category.objects.get(pk=2)
+In [17]: c2.posts.exists()
+Out[17]: True
+In [18]: c2.posts.all()
+Out[18]: <QuerySet [<Women: Ариана Гранде>, <Women: Дженнифер Лоуренс>]>
+In [19]: c2.posts.count()
+Out[19]: 2              2 записи со 2 категорией
+========================================================================================
+
+ 5.3 Класс F, Value и метод annotate()
+F класс нужен чтобы в условиях вроде lte=2 вместо числа можно было подставлять значения какого-либо поля
+Women.objects.filter(pk__lte="cat_id") - вернет ошибку
+Women.objects.filter(pk__gt=F("cat_id")) - отработает нормально
+SQL запрос: WHERE "women_women"."id" > ("women_women"."cat_id")
+
+В модель Husband добавим поле
+m_count = models.IntegerField(blank=True, default=0)
+сделаем миграцию
+
+Husband.objects.update(m_count=F("m_count")+1) - увеличиваем текущее значение каждой строки на 1
+запрос: SET "m_count" = ("women_husband"."m_count" + 1)
+
+изменение у конкретной записи:
+h = Husband.objects.get(pk=1)
+h.m_count = F("m_count")+1
+h.save()
+запрос: SET "name" = 'Брэд Питт',
+            "age" = 30,
+            "m_count" = ("women_husband"."m_count" + 1)
+        WHERE "women_husband"."id" = 1
+
+h.m_count += 1 - так делать нельзя, тк увеличит сразу на 2
+h.save()
+запрос: "m_count" = (("women_husband"."m_count" + 1) + 1)
+
+Использование +=, -=, *= и тд не рекомендуется.
+
+Присваивание значения следующим образом допустимо:
+h.m_count = 3
+h.save()
+
+from django.db.models import Value
+lst = Husband.objects.all().annotate(is_married=Value(True))
+
+In [13]: for i, x in enumerate(lst):
+    ...:     if i == 0:
+    ...:         print(list(x.__dict__)[1:])
+    ...:     print(list(x.__dict__.values())[1:])
+
+annotate позволяет создавать дополнительные вычисляемые поля
+Внутри класса Value можно указывать разные вычисляемые данные ((2+5), ("hi"*3))
+========================================================================================
+
+ 5.4 Агрегирующие функции. Метод values()
+Агрегирующие функции: https://docs.djangoproject.com/en/4.2/ref/models/querysets/#aggregation-functions
+
+from django.db.models import Count, Sum, Avg, Max, Min
+
+для использования агрегирующих функций пишется aggregate
+Husband.objects.aggregate(Min('age'))
+Out[3]: {'age__min': 25}
+запрос: SELECT MIN("women_husband"."age") AS "age__min"
+
+In [4]: Husband.objects.aggregate(Min('age'), Max('age'))
+Out[4]: {'age__min': 25, 'age__max': 40}
+запрос: SELECT MIN("women_husband"."age") AS "age__min",
+               MAX("women_husband"."age") AS "age__max"
+
+Для использования своих названий ключей:
+In [1]: Husband.objects.aggregate(young=Min('age'), old=Max('age'))
+Out[1]: {'young': 25, 'old': 40}
+запрос: SELECT MIN("women_husband"."age") AS "young",
+               MAX("women_husband"."age") AS "old"
+
+Можно делать вычисления:
+In [2]: Husband.objects.aggregate(res=Max('age') - Min('age'))
+Out[2]: {'res': 15}
+SELECT (MAX("women_husband"."age") - MIN("women_husband"."age")) AS "res"
+
+Можно использовать после фильтра:
+In [4]: Women.objects.filter(pk__gt=2).aggregate(res=Count('cat_id'))
+
+values используется для выбора только определенных полей:
+In [5]: Women.objects.values('title', 'cat_id')
+<QuerySet [{'title': 'Ариана Гранде', 'cat_id': 2}, {'title': 'Дженнифер Лоуренс', 'cat_id': 2},
+{'title': 'Джулия Робертс', 'cat_id': 1}, {'title': 'Марго Робби', 'cat_id': 1},
+{'title': 'Анджелина Джоли', 'cat_id': 1}]>
+SELECT "women_women"."title",
+       "women_women"."cat_id"
+
+Women.objects.values('title', 'cat_id').get(pk=1)
+Out: {'title': 'Анджелина Джоли', 'cat_id': 1}
+
+Можно получать значения полей связанной таблицы через "__" (cat__name):
+In [7]: Women.objects.values('title', 'cat__name').get(pk=1)
+Out[7]: {'title': 'Анджелина Джоли', 'cat__name': 'Актрисы'}
+========================================================================================
+
+ 5.5 Группировка и агрегирование. Вычисления на стороне СУБД
+ Функции СУБД: https://docs.djangoproject.com/en/4.2/ref/models/database-functions/
+
+In [9]: Women.objects.values('cat_id').annotate(total=Count('id'))
+<QuerySet [{'cat_id': 1, 'id__count': 3}, {'cat_id': 2, 'id__count': 2}]>
+ SELECT "women_women"."cat_id",
+ COUNT("women_women"."id") AS "total"
+ FROM "women_women"
+ GROUP BY "women_women"."cat_id"
+
+Использование annotate с агрегирующей функцией после values позволяет использовать данную агр. функцию для
+определенных групп записей. В данном случае группирует по cat_id и показывает что есть 3 записи с id=1, и
+2 записи с id=2.
+
+Создаем новую выборку с доп полем total, которое считает количество постов в данной категории:
+lst = Category.objects.annotate(total=Count('posts'))
+
+for i, x in enumerate(lst):
+     if i == 0:
+         print(list(x.__dict__)[1:])
+     print(list(x.__dict__.values())[1:])
+
+['id', 'name', 'slug', 'total']
+[1, 'Актрисы', 'aktrisy', 3]
+[2, 'Певицы', 'pevicy', 2]
+[3, 'Спортсменки', 'sportsmenki', 0]
+
+можно комбинировать с фильтром:
+lst = Category.objects.annotate(total=Count('posts')).filter(total__gt=0)
+<QuerySet [<Category: Актрисы>, <Category: Певицы>]>. Тк в категории Спортсменки 0 постов
+
+In [16]: lst = TagPost.objects.annotate(total=Count('tags')).filter(total__gt=0)
+<QuerySet [<TagPost: Брюнетки>, <TagPost: Высокие>]>
+
+В women_tags.py, в теге show_categories поменяем получение списка cats чтобы был список категорий с постами:
+cats = Category.objects.annotate(total=Count('posts')).filter(total__gt=0)
+
+Так же меняем возврат в теге show_all_tags чтобы не возвращал нулевые теги:
+return {'tags': TagPost.objects.annotate(total=Count('tags')).filter(total__gt=0)}
+
+Теперь на сайте отображаются только не пустые категории и теги
+
+
+from django.db.models.functions import Length
+In [19]: lst = Husband.objects.annotate(len_name=Length('name'))
+Делаем выборку с доп полем len_name, которое показывает длину значения поля name.
+========================================================================================
+
+ 5.6 Оптимизация сайта с Django Debug Toolbar
+ Debug Toolbar: https://django-debug-toolbar.readthedocs.io/en/latest/installation.html
+
+Django Debug Toolbar используется чтобы проверить:
+- скорость работы приложения
+- нагрузку на СУБД (частоту и сложность запросов)
+- корректность возвращаемых пользователю данных
+
+Установка и подключение:
+https://django-debug-toolbar.readthedocs.io/en/latest/installation.html
+
+Для оптимизации SQL запросов есть 2 метода:
+- select_related(key) - "жадная" загрузка(загрузка сразу всех) связанных данных по внешнему ключу key,
+который имеет тип ForeignKey;
+- prefetch_related(key) - "жадная" загрузка связанных данных по внешнему ключу key,
+который имеет тип ManyToManyField.
+
+В представлении index (в views.py) перепишем получение постов:
+posts = Women.published.all().select_related('cat')
+в аргументах указывается название атрибута ForeignKey, используемого для связи таблиц
+
+Так же дописываем в представлении show_category и show_tag_postlist:
+posts = Women.published.filter(cat_id=category.pk).select_related('cat')
+posts = tag.tags.filter(is_published=Women.Status.PUBLISHED).select_related('cat')
+
+Теперь нет дублирования SQL запросов.
+========================================================================================
+========================================================================================
+
+    6. Работа с админ-панелью
+ 6.1 Подключение админ-панели. Регистрация моделей
+В settings.py поменяем язык на русский:
+LANGUAGE_CODE = 'ru-RU'
+
+Для начала создадим супер юзера:
+python3 manage.py createsuperuser
+name - root
+email - root@sitewomen.ru
+pass - 1234
+
+Теперь можно зайти в админ панель и там создавать новых пользователей и назначать им определенные группы.
+
+Чтобы видеть в админ панели свое приложение (women), его нужно зарегистрировать:
+В admin.py импортируем модели и регистрируем:
+from .models import Women
+admin.site.register(Women)
+
+Теперь в админ панели есть приложение women, при просмотре определенных записей, кнопка
+"посмотреть на сайте" будет отображаться только если в модели Women есть метод get_absolute_url
+
+Для изменения заголовков админ панели в sitewomen urls.py добавляем
+admin.site.site_header = 'Панель администрирования'
+
+Для изменения заголовка приложения там же добавляем
+admin.site.index_title = 'Известные женщины мира'
+
+Изменение названия Базы записей в приложении:
+В models.py, class Women, class Meta добавляем:
+verbose_name = 'Известные женщины'
+verbose_name_plural = 'Известные женщины'
+
+Изменение названия приложения:
+В apps.py, class WomenConfig добавляем:
+verbose_name = 'Женщины мира'
+========================================================================================
+
+ 6.2 Настройка отображения списка статей
+ Админ-панель: https://docs.djangoproject.com/en/4.2/ref/contrib/admin/
+
+Для отображения полей в списке статей(в админ панели, в приложении):
+В admin.py создаем класс:
+class WomenAdmin(admin.ModelAdmin):
+    list_display = ('id', 'title', 'time_create', 'is_published')
+И добавляем его в список для регистрации:
+admin.site.register(Women, WomenAdmin)
+
+Так же можно зарегистрировать при помощи декоратора:
+@admin.register(Women)
+class WomenAdmin(admin.ModelAdmin):
+    list_display = ('id', 'title', 'time_create', 'is_published')
+
+Для кликабельности по нескольким полям добавляем:
+list_display_links = ('id', 'title')        (по умолчанию кликабелен только id)
+
+ordering = ['time_create', 'title']     для сортировки по полям (только для админ панели)
+
+Для изменения названий полей в админ панели, в классе Women у каждого параметра надо прописать verbose_name
+
+Регистрируем вторую модель Категории. В admin.py добавляем:
+@admin.register(Category)
+class CategoryAdmin(admin.ModelAdmin):
+    list_display = ('id', 'name')
+    list_display_links = ('id', 'name')
+
+В модель Category добавляем:
+    class Meta:
+        verbose_name = 'Категория'
+        verbose_name_plural = 'Категории'
+
+В name добавляем verbose_name='Категория'
+
+list_editable = ['is_published'] - чтобы можно было менять значение в админ панели
+
+Но сейчас в админ панели у всех постов показывается статус "черновик", т.к. в модели это BooleanField, но
+в choices он ссылается на числовые значения (в джанго нет булевых choices, только IntegerChoices и
+TextChoices). Поэтому перепишем атрибут в модели чтобы он ссылался на булевые значения:
+is_published = models.BooleanField(choices=tuple(map(lambda x: (bool(x[0]), x[1]), Status.choices)),
+                                       default=Status.DRAFT, verbose_name="Статус")
+
+Настроим пагинацию(кол-во постов на одной странице). В admin.py, WomenAdmin добавляем:
+list_per_page = 5
+========================================================================================
+
+ 6.3 Пользовательские поля и действия в админ-панели
+Для добавления дополнительного поля в админ панели без доавбления его в БД, добавляем функцию в класс
+WomenAdmin (admin.py):
+    def brief_info(self, women: Women):
+        return f"Описание {len(women.content)} символов."
+Будет возвращать длину описания.
+Этот метод можно указывать в списке list_display.
+Изменить название данного столбца в админ панели:
+@admin.display(description='Краткое описание') перед вункцией
+
+Для сортировки добавленного столбца в декораторе доавляем атрибут ordering="field_name": ordering='content'.
+В данном случае будет сортировать по полю content в лексикографическом порядке, не по количеству символов.
+
+Сейчас в панели есть только возможность удалить выбранные записи, добавим другое действие (делать посты
+опубликованными и наоборот):
+В WomenAdmin добавляем функцию:
+    def set_published(self, request, queryset):
+        queryset.update(is_published=Women.Status.PUBLISHED)
+
+Добавляем это действие в WomenAdmin:
+actions = ['set_published']
+
+Изменить название действия:
+@admin.action(description='Опубликовать выбранные записи')
+
+Для вывода сообщений добавляется self.message_user в вункцию, которая должна выводить:
+self.message_user(request, f"Изменено {count} записей.") - выведет количество измененных записей
+
+Добавим возможность снятия с публикации:
+    @admin.action(description='Снять с публикации выбранные записи')
+    def set_draft(self, request, queryset):
+        count = queryset.update(is_published=Women.Status.DRAFT)
+        self.message_user(request, f"{count} записей снято с публикации.", messages.WARNING)
+
+messages.WARNING выводит сообщение с другим знаком. (без него зеленая галочка, с ним желтый зн восклицания)
+========================================================================================
+
+ 6.4 Панель поиска и панель фильтрации
+Добавим панель поиска:
+В класс WomenAdmin добавим атрибут:
+search_fields = ['title']   -   указывается список полей по которым нужен поиск
+Поиск регистрозависимый.
+Добавим поиск по названию категории:
+search_fields = ['title', 'cat__name']
+Т.к. название категории в другом классе, мы обращаемся через ForeignKey к полю name через "__".
+Теперь поиск производится по двум полям одновременно.
+В списке полей для поиска можно использовать lookups (title__startswith)
+
+Добавим панель для фильтрации:
+В класс WomenAdmin:
+list_filter = ['cat__name', 'is_published']
+Справа появляется панель с фильтрами по категории и публикации.
+
+Добавим свой фильтр (замужем или нет):
+В admin.py добавляем новый класс:
+
+class MarriedFilter(admin.SimpleListFilter):
+    title = 'Статус женщин' -   название фильтра
+    parameter_name = 'status'   -   имя параметра в адресной строке
+
+    def lookups(self, request, model_admin):    # Должен возвращать список с возможными статусами
+        return [
+            ('married', 'Замужем'),
+            ('single', 'Не замужем'),
+        ]
+
+    def queryset(self, request, queryset):
+        if self.value() == 'married':
+            return queryset.filter(husband__isnull=False)   -   возвращает список где поле husband не NULL
+        elif self.value() == 'single':
+            return queryset.filter(husband__isnull=True)   -   возвращает список где поле husband = NULL
+
+В список фильтров добавляем ссылку на этот класс (без кавычек, класс должен быть создан перед классом Админ):
+list_filter = [MarriedFilter, 'cat__name', 'is_published']
+
+При использовании фильтра в адресной строке будет появляться атрибут:
+?q=&status=married
+(status - parameter_name,
+married - возврат из метода lookups)
+========================================================================================
+
+ 6.5 Настройка формы редактирования записей
+По умолчанию на странице отдельных записей отображаются все изменяемые поля (кроме автозаполняющихся, вроде
+time_create, time_update). Чтобы в админ панели можно было менять только определенные поля, в классе
+WomenAdmin добавляем атрибут fields, куда передается список нужных полей:
+fields = ['title', 'slug', 'content', 'cat']
+
+Чтобы создавать новые записи, нужно добавить все обязательные поля в список.
+Вместо списка отображаемых полей, можно добавить список исключенных полей:
+exclude = ['tags', 'is_published']
+
+Соответсвенно будут отображаться все поля, кроме указанных.
+
+readonly_fields = ['slug']  -   поля только для чтения.
+
+При такой настройке слага, можно добавить только одну новую запись (в ней слаг будет пустой строкой), при
+попытке добавления еще одной записи, будет ошибка, тк слаг должен быть уникален, а онп будет пытаться
+добавить пустую строку еще раз.
+
+Для автоматической генерации слага в модель Women добавим функцию save, которая получает слаг из title:
+    def save(self, *args, **kwargs):
+        self.slug = slugify(translit_to_eng(self.title))
+        super().save(*args, **kwargs)
+
+Функция slugify не работает с кириллицей, добавим костыль в models.py:
+def translit_to_eng(s: str) -> str:
+    d = {'а': 'a', 'б': 'b', 'в': 'v', 'г': 'g', 'д': 'd',
+         'е': 'e', 'ë': 'yo', 'ж': 'zh', 'з': 'z', 'и': 'i', 'к': 'k',
+         'л': 'l', 'м': 'm', 'н': 'n', 'о': 'o', 'п': 'p', 'р': 'r',
+         'с': 'c', 'т': 't', 'у': 'u', 'ф': 'f', 'х': 'h', 'ц': 'c', 'ч': 'ch',
+         'ш': 'sh', 'щ': 'shch', 'ь': '', 'ы': 'y', 'ъ': '', 'э': 'r', 'ю': 'yu', 'я': 'ya'}
+
+    return "".join(map(lambda x: d[x] if d.get(x, False) else x, s.lower()))
+
+Вместо всего этого колхоза:
+Закомментим функцию save в модели и readonly_fields в WomenAdmin, тк поле слаг должно быть редактируемым.
+В WomenAdmin добавим атрибут:
+prepopulated_fields = {"slug": ("title", )} (slug заполняется на основе title)
+Теперь слаг генерируется автоматически, но только при  создании новой записи. Чтобы работало в существующей
+записи, сначала очистить поля title и slug, попробовать созранить, вылезет оошибка, теперь слаг будет
+гененрироваться автоматически.
+
+Для отображения связи многие ко многим (tags):
+Добавим filter_horizontal = ['tags']    -   будет 2 поля (доступные теги и выбранные теги для записи)
+или filter_vertical = ['tags']  -   2 поля вертикально
+========================================================================================
+
+ 6.6 Настраиваем внешний вид админ-панели
+В папке templates создадим подкатегорию admin, в ней base_site.html, скопируем туда содержимое base_site.html,
+который находится во внешней библиотеке.
+
+Добавим в base_site_html следующий блок, который позволяет добавлять свои стили:
+{% block extrastyle %}
+<link rel="stylesheet" href="{% static 'css/admin/admin.css' %}">
+{% endblock %}
+
+В папке проекта sitewomen создадим директорию static/css/admin/admin.css
+Чтобы эти файлы подгружались, в setting.py нужно добавить:
+STATICFILES_DIRS = [
+    BASE_DIR / 'static',
+]
+BASE_DIR - папка проекта, потом static
+
+В admin.css изменим цвета оформления:
+#header, .module caption, #changelist-filter h2 {
+    background: #3F4137;
+}
+
+div.breadcrumbs {
+    background: #6A6E5D;
+}
+
+Чтобы узнать селектор, можно посмотреть теги через инспеткор сайта
+
+Полезный пакет для настройки темы админки:
+https://pypi.org/project/django-admin-interface/
+========================================================================================
+========================================================================================
+
+    7. Работа с формами
+ 7.1 Что такое HTML-формы. Отправка данных по GET и POST-запросам
+ Теги HTML-форм: https://www.w3schools.com/html/html_forms.asp
+
+Формы обозначаются следующим образом: <form>...</form>
+Они служат для передачи пользовательской информации на сервер (напр форма авторизации).
+
+Формы бывают связанные с моделью (с БД, напр авторизация передает логин пароль)
+Не связанные с моделью (поиск или отправка письма на эл почту, если обращение к БД не требуется)
+
+Сделаем форму добавления статьи:
+В views.py, изменим представление addpage:
+def addpage(request):
+    return render(request, 'women/addpage.html', {'menu': menu, 'title': 'Добавление статьи'})
+
+Создадим шаблон addpage.html В templates/women
+{% extends 'base.html' %}
+
+{% block content %}
+<h1>{{title}}</h1>
+<form action="" method="post">
+    {% csrf_token %}
+    <p><label for="id_1">Текст: </label><input type="text" id="id_1" name="filed_text"></p>
+    <p><label for="id_2">Отметка: </label><input type="checkbox" id="id_2" name="filed_check"></p>
+    <p><label for="id_3">Число: </label><input type="number" id="id_3" name="filed_num"></p>
+    <p><label for="id_4">Пароль: </label><input type="password" id="id_4" name="filed_psw"></p>
+    <p><button type="submit">Отправить</button></p>
+</form>
+{% endblock %}
+
+p - чтобы в отдельной строке
+label - подписать поле
+name - для передачи данных
+method="post" - чтобы использовался post запрос
+{% csrf_token %} - чтобы можно было исползовать пост запрос, тк джанго требует это в целях защиты
+
+В дебаг режиме можно посмотреть коллекции в окне evaluate (request.POST)
+========================================================================================
+
+ 7.2 Использование форм не связанных с моделями
+Forms API: https://docs.djangoproject.com/en/4.2/ref/forms/api/
+Form fields: https://docs.djangoproject.com/en/4.2/ref/forms/fields/
+
+Создадим класс формы. Создаем файл forms.py в приложении women. Создаем класс формы:
+class AddPostForm(forms.Form):
+    title = forms.CharField(max_length=255)
+    slug = forms.SlugField(max_length=255)
+    content = forms.CharField(widget=forms.Textarea())
+    is_piblished = forms.BooleanField()
+    cat = forms.ModelChoiceField(queryset=Category.objects.all())
+    husband = forms.ModelChoiceField(queryset=Husband.objects.all())
+
+Перепишем представление addpage:
+def addpage(request):
+    if request.method == 'POST':            # Если просто зашли на страницу, то метод GET и пойдет по ветке else,
+        form = AddPostForm(request.POST)    # и формирует объект класса AddPostForm с пустыми полями. Если же идет
+        if form.is_valid():                 # отправка заполненных данных, то будет метод POST и он создаст
+            print(form.cleaned_data)        # экземпляр класса с заполненными полями и будет проверять данные на
+        else:                               # валидность на стороне сервера (is_valid())
+            form = AddPostForm()
+
+    data = {
+        'menu': menu,
+        'title': 'Добавление статьи',
+        'form': form               # передаем экземпляр класса формы чтобы он был доступен в шаблоне addpage.html
+    }
+    return render(request, 'women/addpage.html', data)
+
+В шаблоне addpage.html меняем:
+{{ form.as_p }} -   тег формы отображает все поля через "р", есть еще as_ul(неупоряд список), as_table(таблица)
+========================================================================================
+
+ 7.3 Отображение полей формы. Сохранение переданных данных в БД
+Классы и параметры полей формы: https://docs.djangoproject.com/en/4.2/ref/forms/fields/
+
+Параметры:
+label='' - изменяет название поля.
+empty_label='' - отвечает за изменение отображения пустого поля в выпадающем списке (-------)
+initial=True - значение по умолчанию у чекбокса (True, False)
+
+В addpage.html перепишем отображение формы {{ form.as_p }} через цикл:
+    {% for f in form %}
+    <p><label class="form-label" for="{{ f.id_for_label }}">{{ f.label }}</label>{{ f }}</p>
+    <div class="form-error">{{ f.errors }}</div>
+    {% endfor %}
+
+Для изменения оформления отдельных полей в форме используется атрибут widget:
+title = forms.CharField(max_length=25, label='Заголовок', widget=forms.TextInput(attrs={'class': 'form-input'}))
+
+Сделаем добавление нового поста в БД:
+В представлении addpage:
+    if request.method == 'POST':
+        form = AddPostForm(request.POST)
+        if form.is_valid():
+            # print(form.cleaned_data)
+            try:
+                Women.objects.create(**form.cleaned_data)
+                return redirect('home')
+            except:
+                form.add_error(None, "Ошибка добавления поста")
+    else:
+        form = AddPostForm()
+
+В данном случае мы можем создать запись одной командой, т.к. в форме мы назвали поля точно так же, как и в модели,
+если дать другие названия, то не получится создать запись через Women.objects.create(**form.cleaned_data).
+========================================================================================
+
+ 7.4 Валидация полей формы
+Классы и параметры полей формы: https://docs.djangoproject.com/en/4.2/ref/forms/fields/
+
+Классы полей формы имеют больше параметров для настройки, чем классы полей модели.
+Чтобы отображать свой текст ошибок, добавим в параметры формы, в title словарь:
+error_messages={'min_length': 'Слишком короткий заголовок',
+                'required': 'Без заголовка никак'})
+
+В ключ пишется название параметра при проверке которого будет выдваться текст об ошибке.
+
+Валидаторы:
+Добавим валидаторы в параметры слага в модель и в форму:
+SlugField(validators=[MinLengthValidator(5, message='Минимум 5 символов'),
+                      МaxLengthValidator(100, message='Максимум 100 символов'),])
+
+Создадим свой валидатор в forms.py:
+(Без @deconstructible экземпляр валидатора с параметрами может не сериализоваться в миграциях. Декоратор
+обеспечивает, что Django при генерации миграций сможет воспроизвести валидатор, сохранив аргументы конструктора.)
+@deconstructible
+class RussianValidator:
+    ALLOWED_CHARS = 'АБВГДЕЁЖЗИЙКЛМНОПРСТУФХЦЧШЩЬЫЪЭЮЯабвгдеёжзийклмнопрстуфхцчшщьыъэюя0123456789- '
+    code = 'russian'
+
+    def __init__(self, message=None):
+        self.message = message if message else "Должны присутствовать только русские символы, дефис и пробел."
+
+    def __call__(self, value, *args, **kwargs):
+        if not (set(value) <= set(self.ALLOWED_CHARS)):
+            raise ValidationError(self.message, code = self.code)
+
+В форму title добавим свой декоратор(проверку на русский язык):
+title = forms.CharField(..., validators=[
+                                RussianValidator(),
+                            ], ...)
+
+Создание своего валидатора оправдано только если предполагается его многократное использование в проекте. Для
+проверки определенного поля лучше создавать метод внутри класса формы для этого поля (def clean_<field_name>):
+    def clean_title(self):
+        title = self.cleaned_data['title']
+        ALLOWED_CHARS = 'АБВГДЕЁЖЗИЙКЛМНОПРСТУФХЦЧШЩЬЫЪЭЮЯабвгдеёжзийклмнопрстуфхцчшщьыъэюя0123456789- '
+        if not (set(title) <= set(ALLOWED_CHARS)):
+            raise ValidationError("Должны присутствовать только русские символы, дефис и пробел.")
+
+У поля title убрали параметр validators, теперь проверка осуществляется через метод.
+========================================================================================
+
+ 7.5 Формы связанные с моделями
+Классы и параметры полей формы: https://docs.djangoproject.com/en/4.2/ref/forms/fields/
+
+В прошлой форме добавления статьи было дублирование кода (создавали поля с такими же названиями как в модели).
+Если предполагается взаимодействие с БД, то лучше форму связать с ней. Для этого класс должен наследоваться от
+forms.ModelForm (было forms.Form). Внутри формы создаем class Meta, в ней указываем модель с которой будет
+связана форма и поля которые нужно отображать. Для отображения всех полей (кроме тех, которые заполняются
+автоматически) используется '__all__':
+    class Meta:
+        model = Women
+        fields = ['title', 'slug', 'content', 'is_published', 'cat', 'husband', 'tags']
+
+Чтобы изменить отображения пустого поля в списке у полей категории и муж (-------), в класс формы добавим
+атрибуты cat, husband как и в не связанной форме:
+cat = forms.ModelChoiceField(queryset=Category.objects.all(), empty_label='Категория не выбрана',
+                             label='Категории')
+husband = forms.ModelChoiceField(queryset=Husband.objects.all(), empty_label='Не замужем', required=False,
+                                 label='Муж')
+
+Для изменения оформления полей (widgets) в классе мета создаем словарь widgets, где указываем в ключе название
+поля, в значении оформление:
+        widgets = {
+            'title': forms.TextInput(attrs={'class': 'form-input'}),
+            'content': forms.Textarea(attrs={'cols': 50, 'rows': 5}),
+        }
+
+Для изменения названия в классе мета создаем словарь labels:
+labels= {'slug': 'URL'}
+
+У связанной формы есть метод save, который сохраняет изменения в БД. Для этого в представлении addpage после
+проверки валидности данных пропишем данный метод:
+        if form.is_valid():
+            form.save()
+            return redirect('home')
+
+Валидаторы работают так же как в не связанной форме. Добавляем метод clean_<field_name>:
+    def clean_title(self):
+        title = self.cleaned_data['title']
+        if len(title) > 50:
+            raise ValidationError('Длина превышает 50 символов')
+
+        return title
+========================================================================================
+
+ 7.6 Загрузка (upload) файлов на сервер. Классы FileField, ImageField
+
+
+Создадим html форму для загрузки файлов:
+В about.html:
+<form action="" method="post" enctype="multipart/form-data">
+    {% csrf_token %}
+    <p><input type="file" name="file_upload"></p>
+    <p><button type="submit">Отправить</button></p>
+</form>
+
+Метод пост для отправки файлов.
+enctype="multipart/form-data" Обязателен, без него загружаться не будет и не будет выдавать ошибок.
+токен для метода пост (без него не будет работать)
+
+В views.py, пропишем функцию обработки загружаемого файла:
+def handle_uploaded_file(f):
+    with open(f"uploads/{f.name}", "wb+") as destination:
+        for chunk in f.chunks():
+            destination.write(chunk)
+
+chunk загружает частями чтобы не перегружать память.
+
+В представление about добавляем загрузку файла:
+def about(request):
+    if request.method == 'POST':
+        handle_uploaded_file(request.FILES['file_upload'])
+    return render(request, 'women/about.html', {'title': 'О сайте', 'menu': menu})
+
+В корневой директории создаем папку uploads, т.к. при загрузку файла, директории не создаются.
+
+Для проверки данных перед отправкой файла создадим форму загрузки файла, не привязанную к БД:
+class UploadFileForm(forms.Form):
+    file = forms.FileField(label='Файл')
+
+Перепишем представление about:
+def about(request):
+    if request.method == 'POST':
+        form = UploadFileForm(request.POST, request.FILES)
+        if form.is_valid():
+            handle_uploaded_file(form.cleaned_data['file'])
+    else:
+        form = UploadFileForm()
+    return render(request, 'women/about.html',
+                  {'title': 'О сайте', 'menu': menu, 'form': form})
+
+В шаблоне about.html меняем отображение поля загрузки файла и показываем через {{ form.as_p }}
+
+Сейчас, если загружаются файлы с одинковыми именами, они перезаписываются.
+
+Кроме forms.FileField, есть ImageField(для картинок)
+Установим интерпретатор pillow: pip install pillow
+========================================================================================
+
+ 7.7 Загрузка файлов с использованием классов моделей
+
+Создадим новую модель:
+class UploadFiles(models.Model):
+    file = models.FileField(upload_to='uploads_model')
+
+В представлении about перепишем загрузку файла:
+        if form.is_valid():
+            fp = UploadFiles(file=form.cleaned_data['file'])
+            fp.save()
+
+Загружает файлы в папку uploads_model в корневой директории (эта директория указана в модели)
+
+В settings.py пропишем директорию для файлов:
+MEDIA_ROOT = BASE_DIR / 'media'
+
+Теперь загружает в корневую директорию/media/uploads_model
+
+В модель Women добавим атрибут:
+    photo = models.ImageField(upload_to='photos/%Y/%m/%d/', default=None, blank=True, null=True,
+                              verbose_name='Фото')
+
+В шаблон addpage.html добавим enctype="multipart/form-data" чтобы можно было загружать фото
+
+В форме AddPostForm добавим фото в поля:
+fields = ['title', 'slug', 'content', 'photo', 'is_published', 'cat', 'husband', 'tags']
+
+В функции представления addpage, добавим сохранение фото в форме:
+    if request.method == 'POST':
+        form = AddPostForm(request.POST, request.FILES)
+
+Теперь придоавлении статьи, фото загружается в media/photos/year/month/day/
