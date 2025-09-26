@@ -1420,4 +1420,307 @@ fields = ['title', 'slug', 'content', 'photo', 'is_published', 'cat', 'husband',
     if request.method == 'POST':
         form = AddPostForm(request.POST, request.FILES)
 
-Теперь придоавлении статьи, фото загружается в media/photos/year/month/day/
+Теперь при добавлении статьи, фото загружается в media/photos/year/month/day/
+========================================================================================
+
+ 7.8 Отображение изображений в HTML-документе и админ-панели
+
+У атрибута фото есть параметр url (В консоли w = Women.objects.all()[0], w.photo.url), по которому можно
+получить данное изображение
+
+Сейчас не подгружаются файлы фото, для этого в settings.py нужно добавить строку
+MEDIA_URL = '/media/'
+
+Теперь префикс media добавляется ко всем файлам (/media/photos/2025/09/18/rianna.jpg)
+Этот префикс нужен чтобы можно было прописать маршрут для доступа к файлам и связать его с каталогом media
+в проекте, все это делается в urls.py.
+
+if settings.DEBUG:
+    urlpatterns += static(settings.MEDIA_URL, document_root=settings.MEDIA_ROOT)
+
+Теперь маршрут связан с рабочим каталогом и фото отображается на странице поста.
+Так же для отображения маленьких фото на главной странице добавим в index.html:
+{% if p.photo %}
+        <p><img class="img-article-left thumb" src="{{p.photo.url}}" alt="" ></p>
+{% endif %}
+
+настроим картинки в админ панели:
+В women admin.py WomenAdmin fields и list_display добавим photo:
+    fields = ['title', 'slug', 'content', 'photo', 'cat', 'husband', 'tags']
+    list_display = ('title', 'photo', 'time_create', 'is_published', 'cat')
+
+Сейчас в админке, в списке записей отображается путь к изображению, чтобы показывалось само изображение
+в admin.py создадим вычисляемое поле:
+    @admin.display(description='Изображение', ordering='content')
+    def post_photo(self, women: Women):
+        if women.photo:
+            return mark_safe(f"<img src='{women.photo.url}' width=50>")     # Возвращает html элемент
+        return "Без фото"
+
+В list_display меняем photo на post_photo (название функции)
+
+Для отображения фото на странице редактирования записи добавим post_photo в readonly_fields и fields:
+    fields = ['title', 'slug', 'content', 'photo', 'post_photo', 'cat', 'husband', 'tags']
+    readonly_fields = ['post_photo']
+
+На странице редактирования записи продублируем панель сохранения сверху. В WomenAdmin добавим:
+save_on_top = True
+========================================================================================
+
+ 8.1 Введение в CBV (Class Based Views). Классы View и TemplateView
+Классы представлений: https://docs.djangoproject.com/en/4.2/ref/class-based-views/
+
+Вместо функций представлений обычно используют классы представлений, т.к. ООП подход позволяет делать код
+более читаемым и упростить его.
+Создадим класс AddPage:
+class AddPage(View):
+    def get(self, request):             # для get запросов
+        form = AddPostForm()
+        data = {
+            'menu': menu,
+            'title': 'Добавление статьи',
+            'form': form,
+        }
+        return render(request, 'women/addpage.html', data)
+
+    def post(self, request):            # для post запросов
+        form = AddPostForm(request.POST, request.FILES)
+        if form.is_valid():
+            form.save()
+            return redirect('home')
+
+        data = {
+            'menu': menu,
+            'title': 'Добавление статьи',
+            'form': form,
+        }
+        return render(request, 'women/addpage.html', data)
+
+Логику по вызову разных методов реализают базовый класс View.
+Теперь свяжем класс AddPage с маршрутом добавления новой статьи:
+В urls.py перепишем путь добавления новой статьи:
+    path('addpage/', views.AddPage.as_view(), name='add_page'),
+    AddPage - созданный класс предтавления
+    as_view() - вызываем метод чтобы класс работал
+
+Рассмотрим класс TemplateView.
+Заменим функцию index классом WomenHome:
+class WomenHome(TemplateView):
+    template_name = 'women/index.html'
+
+Привяжем класс к маршруту (urls.py):
+path('', views.WomenHome.as_view(), name='home'),
+
+Сейчас данные в шаблон не передаются. Для этого в класс надо добавить словарь extra_context:
+    extra_context = {
+        'title': 'Главная страница',
+        'menu': menu,
+        'posts': Women.published.all().select_related('cat'),
+        'cat_selected': 0,
+    }
+
+extra_context можно передавать в путях представлений как параметр метода as_view():
+path('', views.WomenHome.as_view(extra_context={}), name='home')
+
+extra_context используется для заранее подготовленных данных. Динамические данные (которые известны только в
+момент запроса) этот словарь не подойдет. Для получения динамических данных используетяс метод get_context_data:
+    def get_context_data(self, **kwargs):
+        context = super().get_context_data(**kwargs)
+        context['title'] = 'Главная страница'
+        context['menu'] = menu
+        context['posts'] = Women.published.all().select_related('cat')
+        context['cat_selected'] = int(self.request.GET.get('cat_id', 0))    -   получаем значение cat_id из
+                                                                    адресной строки (something.ru/?cat_id=2)
+        return context
+
+В нашем случае для главной страницы данный метод избыточен и лучше использовать обычный словарь extra_context
+========================================================================================
+
+ 8.2 Класс ListView
+
+Класс ListView предназначен для отображения произвольных списков.
+class WomenHome(ListView):
+    # model = Women
+    template_name = 'women/index.html'
+    context_object_name = 'posts'
+    extra_context = {
+        'title': 'Главная страница',
+        'menu': menu,
+        'cat_selected': 0,
+    }
+
+    def get_queryset(self):
+        return Women.published.all().select_related('cat')
+
+Этот класс предполагает получение данных из таблицы и должен быть с ней связан:
+model = Women
+
+Так же нужно указать нужный html шаблон:
+template_name = 'women/index.html'
+
+Сейчас страница загружается, но без данных. Тк раньше мы передавали данные списком posts, а класс ListView
+держит список записей в переменной object_list. Можно переназначить имя:
+context_object_name = 'posts'
+
+Для отображения названия страницы, меню нужно добавить словарь с данными:
+    extra_context = {
+        'title': 'Главная страница',
+        'menu': menu,
+        'cat_selected': 0,
+    }
+
+Данный словарь, как и в классе TemplateView может содержать только подготовленные данные. Для динамических
+данных так же используется метод get_context_data.
+
+Сейчас отображаются все записи из БД. Для фильтрации данных (чтобы показывались только опубликованные статьи)
+закомментируем model. И используем метод get_queryset:
+    def get_queryset(self):
+        return Women.published.all().select_related('cat')
+
+Закомментиурем функции представлений addpage и index, тк сейчас мы используем классы.
+
+Определим класс вместо функции show_category:
+
+class WomenCategory(ListView):
+    template_name = 'women/index.html'
+    context_object_name = 'posts'
+    allow_empty = False
+
+    def get_queryset(self):
+        return Women.published.filter(cat__slug=self.kwargs['cat_slug']).select_related('cat')
+        # (cat_slug это переменная прописанная в пути
+        # (path('category/<slug:cat_slug>', views.show_category, name='category')))
+
+    def get_context_data(self, **kwargs):
+        context = super().get_context_data(**kwargs)
+        cat = context['posts'][0].cat
+        context['title'] = 'Категория - ' + cat.name
+        context['menu'] = menu
+        context['cat_selected'] = cat.pk
+        return context
+
+Перепишем путь:
+path('category/<slug:cat_slug>', views.WomenCategory.as_view(), name='category')
+
+allow_empty будет поднимать 404 ошибку, если вернется пустой список context['posts'] (Если будет указан слаг,
+которого нет)
+
+Заменим функцию представления show_tag_postlist на класс:
+class TagPostList(ListView):
+    template_name = 'women/index.html'
+    context_object_name = 'posts'
+    allow_empty = False
+
+    def get_context_data(self, *, object_list=None, **kwargs):
+        context = super().get_context_data(**kwargs)
+        tag = TagPost.objects.get(slug=self.kwargs['tag_slug'])
+        context['title'] = 'Тег: ' + tag.tag
+        context['menu'] = menu
+        context['cat_selected'] = None
+        return context
+
+    def get_queryset(self):
+        return Women.published.filter(tags__slug=self.kwargs['tag_slug']).select_related('cat')
+========================================================================================
+
+ 8.3 Класс DetailView
+
+Класс DetailView используется для отобажения отдельных записей. (Сейчас за это отвечает функция show_post).
+Заменим функцию на класс:
+class ShowPost(DetailView):
+    # model = Women
+    template_name = 'women/post.html'
+    slug_url_kwarg = 'post_slug'
+    context_object_name = 'post'
+
+    def get_context_data(self, **kwargs):
+        context = super().get_context_data(**kwargs)
+        context['title'] = context['post'].title
+        context['menu'] = menu
+        return context
+
+    def get_object(self, queryset = None):
+        return get_object_or_404(Women.published, slug=self.kwargs[self.slug_url_kwarg])
+
+Привяжем класс к пути:
+path('post/<slug:post_slug>/', views.ShowPost.as_view(), name='post'),
+
+Данный класс подгружает запись по pk или slug, у нас используется переменная post_slug. Изменим имя переменной:
+slug_url_kwarg = 'post_slug'
+
+В html шаблоне для отображения данных у нас используется переменная post, класс использует object. Переназначим:
+context_object_name = 'post'
+
+Если для отображения страницы исипользуется pk, для изменения названия используется pk_url_kwarg.
+
+Сейчас отображаются даже статьи со статусом черновик, если в строке прописать слаг вручную. Исправляем:
+    def get_object(self, queryset = None):
+        # возвращаем запись только из опубликованных
+        return get_object_or_404(Women.published, slug=self.kwargs[self.slug_url_kwarg])
+========================================================================================
+
+ 8.4 Класс FormView
+ FormView: https://docs.djangoproject.com/en/4.2/ref/class-based-views/generic-editing/#formview
+
+FormView предназначем для автоматизации отображения и обработки html форм.
+Закомментируем класс AddPage(View) и перепишем его с наследованием от FormView:
+class AddPage(FormView):
+    form_class = AddPostForm    # ссылка на класс, не вызов (AddPostForm())
+    template_name = 'women/addpage.html'    # html шаблон
+    success_url = reverse_lazy('home')
+    # reverse возвращает полный маршрут шаблона. reverse_lazy начинает строить маршрут только когда это надо,
+    # а не сразу (как reverse), reverse будет выдавать ошибку, тк на момент вызова путь 'home' еще не определен.
+    # success_url перенаправляет на главную при успешном добавлении
+    extra_context = {
+        'menu': menu,
+        'title': 'Добавление статьи'
+    }   # Для отображения названия страницы и меню
+
+    def form_valid(self, form):    # сохранение записи в БД. Выполняется послед проверки валидности данных
+        form.save()
+        return super().form_valid(form)
+
+Данный класс передает форму в html шаблон через переменную form.
+========================================================================================
+
+ 8.5 Классы CreateView и UpdateView
+Классы представлений: https://docs.djangoproject.com/en/4.2/ref/class-based-views/
+
+CreateView - добавление записей в БД
+UpdateView - изменение записей в БД
+DeleteView - удаление записей из БД
+
+CreateView:
+Изменим класс AddPage:
+class AddPage(CreateView):
+    form_class = AddPostForm
+    template_name = 'women/addpage.html'
+    success_url = reverse_lazy('home')
+    extra_context = {
+        'menu': menu,
+        'title': 'Добавление статьи'
+    }
+
+Мы удалили метод form_valid (из FormView) тк он уже реализован в CreateView
+Если убрать атрибут success_url, он будет перенаправлять по маршруту, построенному с помощью метода
+get_absolute_url в модели Women.
+В этом классе можно не указывать форму, а только указать модель и поля модели для добавления записи. Нужно
+указать все поля, которые обязательны для заполнения, иначе будет ошибка.
+
+UpdateView:
+Создадим класс представления для редактирования статьи:
+class UpdatePage(UpdateView):
+    model = Women
+    fields = ['title', 'content', 'photo', 'is_published', 'cat']
+    template_name = 'women/addpage.html'
+    success_url = reverse_lazy('home')
+    extra_context = {
+        'menu': menu,
+        'title': 'Редактирование статьи'
+    }
+
+Добавим маршрут:
+    path('edit/<slug:slug>/', views.UpdatePage.as_view(), name='edit_page'),
+
+
+
