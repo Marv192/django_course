@@ -1806,6 +1806,278 @@ class TagPostList(DataMixin, ListView):
 
     def get_queryset(self):
         return Women.published.filter(tags__slug=self.kwargs['tag_slug']).select_related('cat')
+========================================================================================
+
+ 8.7 Введение в пагинацию. Класс Paginator
+Paginator: https://docs.djangoproject.com/en/4.2/topics/pagination/
+API Paginator: https://docs.djangoproject.com/en/4.2/ref/paginator/
+
+Paginator нужен для разбивки на страницы.
+В консоли:
+заведем список:
+women = ['Анджелина Джоли', 'Дженнифер Лоуренс', 'Джулия Робертс', 'Марго Робби', 'Ума Турман', '
+                Ариана Гранде', 'Бейонсе', 'Кэтти Перри', 'Рианна', 'Шакира']
+
+импортируем пагинатор:
+from django.core.paginator import Paginator
+
+Заведем экземпляр пагинатора:
+p = Paginator(women, 3)     # 1 - список с которым будет связан, 2 - кол-во элем-ов на одной странице
+
+p.count                 - общее кол-во элементов в списке
+p.num_pages             - кол-во страниц
+p.page_range            - итератор, с его помощью можно перебирать номера страниц
+p1 = p.page(1)          - получаем объект 1й страницы
+p1.object_list          - список элементов 1й страницы
+p1.has_next()           - вернет True, если есть следующая страница, False, если ее нет
+p1.has_previous()       - вернет True, если есть предыдущая страница, False, если ее нет
+p1.has_other_pages()    - вернет True, если есть другие страницы, False, если их нет
+p1.next_page_number()   - вернет номер следующей страницы
+.previous_page_number() - вернет номер предыдущей страницы (ошибка если номер меньше 1)
+
+перепишем функцию представления about:
+def about(request):
+    contact_list = Women.published.all()    - получаем список всех опубликованных постов
+    paginator = Paginator(contact_list, 3)  - создаем экземпляр класса пагинатор
+
+    page_number = request.GET.get('page')   - получаем номер страницы из параметра "page"
+    page_obj = paginator.get_page(page_number)  - получаем текущую страницу (итератор)
+
+    return render(request, 'women/about.html',
+                  {'title': 'О сайте', 'page_obj': page_obj})   - передаем страницу в шаблон
+
+поменяем шаблон about.html:
+{% extends 'base.html' %}   -   наследуется от базового шаблона
+{% block content %}
+<h1>{{ title }}</h1>
+{% for item in page_obj %}  -   перебираем записи в итераторе page_obj
+<p>{{ item.pk }}: {{ item.title }}</p>   -   отображаем id, название поста
+{% endfor %}
+{% endblock %}
+
+<nav>
+    <ul>        - неупорядоченный список
+        {% for p in page_obj.paginator.page_range %}    -   перебор страниц в итераторе кол-ва страниц
+        <li>    - определяет отдельный элемент списка
+            <a href="?page={{ p }}">{{ p }}</a>     -   отображение номеров страниц
+        </li>
+        {% endfor %}
+    </ul>
+</nav>
+
+Сейчас для перебора страниц используется атрибут в строке: about/?page=3
+Если номер будет больше кол-ва страниц - отобразится последняя страница.
+Если будет что-то еще (буквы) - отобразится первая страница
+========================================================================================
+
+ 8.8 Пагинация с классом ListView
+
+Для пагинации в классе, который наследуется от ListView, добавляется атрибут paginate_by. Добавляем в WomenHome:
+    paginate_by = 3     - значение отвечает за количество записей на одной странице
+
+Добавим отображение номеров страниц:
+В base.html добавим блок для наигации:
+{% block navigation %}
+{% endblock %}
+
+В index.html, в блок навигации добавим отображение страниц:
+{% block navigation %}
+{% if page_obj.has_other_pages %}   -   проверяем есть ли другие страницы, если есть, то отображаем навигацию
+<nav class="list-pages">
+    <ul>
+        {% if page_obj.has_previous %}  - если есть предыдущая страница, отобразит кнопку перехода к ней
+        <li class="page-num">
+            <a href="?page={{ page_obj.previous_page_number }}">&lt;</a>
+        </li>
+        {% endif %}
+        {% for p in paginator.page_range %}
+        {% if page_obj.number == p %}   - проверяем, если номер равен выбранной странице, то отображаем как текст
+        <li class="page-num page-num-selected">{{ p }}</li>
+        {% else %}
+        <li class="page-num">
+            <a href="?page={{ p }}">{{ p }}</a>     - отображаем как ссылку
+        </li>
+        {% endif }
+        {% endfor %}
+        {% if page_obj.has_next %}  - если есть следующая страница - отобразит кнопку перехода к ней
+        <li class="page-num">
+            <a href="?page={{ page_obj.next_page_number }}">&gt;</a>
+        </li>
+        {% endif %}
+    </ul>
+</nav>
+{% endif %}
+{% endblock %}
+
+Добавим навигацию на страницы по категориям (paginate_by = 3 в класс представления WomenCategory)
+
+Чтобы не писать paginate_by = 3 в каждом классе, добавим этот атрибут в класс DataMixin:
+Теперь разбивка на страницы будет автоматически появляться где есть ListView.
+
+Уберем отображение страниц, если есть только 1 страница:
+{% if page_obj.has_other_pages %}
+
+Уберем отображение выбранной страницы как ссылку:
+{% if page_obj.number == p %}
+        <li class="page-num page-num-selected">{{ p }}</li>
+
+Сделаем отображение диапазона страниц, +- 2 страницы от выбранной. (3 4 5 6 7)
+Это делается с помощью фильтра add:
+page_obj.number|add:-2, page_obg.number|add:2
+
+Добавим кнопки перехода к следующей и предыдущей страницам:
+
+{% if page_obj.has_previous %}
+    <li class="page-num">
+        <a href="?page={{ page_obj.previous_page_number }}">&lt;</a>
+    </li>
+{% endif %}
+
+{% if page_obj.has_next %}
+    <li class="page-num">
+        <a href="?page={{ page_obj.next_page_number }}">&gt;</a>
+    </li>
+{% endif %}
+========================================================================================
+========================================================================================
+
+    9. Авторизация и регистрация
+ 9.1 Введение в авторизацию пользователей
+Аутентификация: https://docs.djangoproject.com/en/4.2/topics/auth/default/
+
+Authentication(аутентификация) - проверка подлинности (наличия) пользователся по введенным данным (обычно, это
+логин.пароль). Выполняет ассоциацию (связь) введенных данных с пользователем, сохраненным в таблице БД.
+
+Authorization(авторизация) - разрешение на доступ (непосредственно вход) к закрытой части сайта. Часто на этом
+этапе выполняется сохранение в сессии идентификатора пользователя, говорящий о том, что пользователь успешно
+прошел аутентификацию.
+
+Django автоматически создает таблицы для аутентификации в БД. (auth_group, auth_user, ...)
+Авторизацию нужно рассматривать как расширение функционала сайта, для этого нужно создать новое приложение users:
+python3 manage.py startapp users
+
+В settings.py INSTALLED_APPS добавляем 'users'.
+
+Чтобы аутентификация работала, в коллекции MIDDLEWARE должны присутствовать след строки:
+    'django.contrib.sessions.middleware.SessionMiddleware',
+    'django.contrib.auth.middleware.AuthenticationMiddleware',
+По умолчанию они есть.
+
+В users создаем urls.py:
+from django.urls import path
+from . import views
+
+urlpatterns = [
+    path('login/', views.login_user, name='login'),
+    path('logout/', views.logout_user, name='logout'),
+]
+
+Подключим файл urls.py приложения users:
+В приложении sitewomen, urls.py, urlpatterns добавим путь:
+path('users/', include('users.urls', namespace='users')),
+namespace нужен чтобы можно было обращаться к маршрутам в юзере как users:login(users:logout)
+
+Напишем функции представления-заглушки login и logout в users. В views.py:
+def login_user(request):
+    return HttpResponse("login")
+
+def logout_user(request):
+    return HttpResponse("logout")
+
+========================================================================================
+
+ 9.2 Авторизация пользователей. Функции authenticate() и login()
+Аутентификация: https://docs.djangoproject.com/en/4.2/topics/auth/default/
+
+В users создадим форму логина в файле forms.py:
+class LoginUserForm(forms.Form):
+    username = forms.CharField(label='Логин',
+                               widget=forms.TextInput(attrs={'class': 'form-input'}))
+    password = forms.CharField(label='Логин',
+                               widget=forms.PasswordInput(attrs={'class': 'form-input'}))
+
+Создадим html шаблон для отображения формы в users/templates/users/login.html:
+{% extends 'base.html' %}
+
+{% block content %}
+<h1>Авторизация</h1>
+
+<form method="post">
+    {% csrf_token %}
+    {{ form.as_p }}
+    <p><button type="submit">Войти</button></p>
+</form>
+
+{% endblock %}
+
+Изменим функцию представления логина:
+def login_user(request):
+    if request.method == "POST":
+        form = LoginUserForm(request.POST)
+        if form.is_valid():
+            cd = form.cleaned_data
+            user = authenticate(request, username=cd['username'],
+                                password=cd['password'])
+            if user and user.is_active:     - проверяем существование и активность(забанен или нет) юзера.
+                login(request, user)        - логиним юзера (функция джанго)
+                return HttpResponseRedirect(reverse('home'))    - при логине редирект на главную страницу
+    else:
+        form = LoginUserForm()
+
+    return render(request, 'users/login.html', {'form': form})
+
+Перепишем функцию представления logout:
+def logout_user(request):
+    logout(request)
+    return HttpResponseRedirect(reverse('users:login'))
+# если указать просто 'login', будет перенаправлять по адресу 127.0.0.1:8000/login, тк у нас уже есть путь 'login'
+в приложении women, и джанго смотрит сначала в этом приложении, а потом в users. Нам нужен
+127.0.0.1:8000/users/login. Для этого указываем пространство имен, указанное в пути 'users:login'
+========================================================================================
+
+ 9.3 Шаблонные контекстные процессоры
+
+Сделаем отображение меню в форме логина:
+В women/templatetags/women_tags.py создадим простой тег:
+@register.simple_tag
+def get_menu():
+    return menu
+
+В base.html перед циклом отображения меню добавим:
+{% get_menu as menu %}
+
+Для передачи како-либо информации во все шаблоны проекты используются шаблонные контесктные процессоры.
+В users создадим файл context_processors.py:
+from women.utils import menu
+
+def get_women_context(request):
+    return {'mainmenu': menu}
+
+Добавим этот контекстный процессор в проект:
+В sitewomen/settings.py, в список TEMPLATES/OPTIONS/context_processors добавим строку:
+'users.context_processors.get_women_context'
+
+Теперь во все шаблоны будет передаваться список главного меню.
+В base.html уберем {% get_menu as menu %} и перепишем строку цикла на:
+{% for m in mainmenu %}
+
+Сделаем кнопку "Войти" функциональной (сейчас она ведет на 8000/login (нужен 8000/users/login))
+
+В women/utils.py в menu удалим строку с кнопкой войти.
+
+В base.html поменяем цикл отображения меню и сделаем отображение имени пользователя, если он авторизован.
+И кнопки "войти" и "регистрация", если нет.:
+{% for m in mainmenu %}     - отображение стандартного меню (о сайте, добавить статью, обратная связь)
+	<li><a href="{% url m.url_name %}">{{m.title}}</a></li>
+{% endfor %}
+{% if user.is_authenticated %}  - если авторизован - показывает имя и кнопку выйти.
+    <li class="last"> {{user.username}} | <a href="{% url 'users:logout' %}">Выйти</a></li>
+{% else %}  - если не авторизован - кнопки войти и регистрация(никуда не ведет)
+    <li class="last"><a href="{% url 'users:login' %}">Войти</a> | <a href="#">Регистрация</a></li>
+{% endif %}
+
+
+
 
 
 
